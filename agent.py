@@ -16,17 +16,10 @@ def build_simple_agent(model: str, system_prompt: str, tools: Sequence[Any], che
     llm_with_tools = llm.bind_tools(tools)
 
     async def agent_node(state: AgentState) -> AgentState:
-
+        # 도구 호출 여부 판단을 위해 호출 (스트리밍은 외부 제너레이터가 처리)
         response = await llm_with_tools.ainvoke(state["messages"])
-        # 2. 도구 사용 여부 감지 및 출력
-        if response.tool_calls:
-            for tool_call in response.tool_calls:
-                # 도구 이름과 인자값을 출력
-                tool_name = tool_call["name"]
-                tool_args = tool_call["args"]
-                print(f"\033[94m > Tool used: {tool_name}\033[0m")
-                print(f"   Arguments: {tool_args}\n")
-
+    
+        # 여기서 직접 print하지 않고 response만 반환합니다.
         return {"messages": [response]}
     
     workflow = StateGraph(AgentState)
