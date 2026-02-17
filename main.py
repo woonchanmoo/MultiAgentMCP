@@ -11,7 +11,9 @@ from prompt_toolkit import prompt as pt_prompt
 warnings.filterwarnings("ignore", category=UserWarning)
 
 async def get_multiline_input(prompt: str) -> str:
-    print(prompt)
+    # \033[96m: Cyan색, \033[1m: Bold, \033[0m: Reset
+    guide = "\033[96m\033[1m(전송: Esc 누른 후 Enter)\033[0m"
+    print(f"{prompt} {guide}")
     # multiline=True일 때, 전송은 보통 'Esc' 누른 후 'Enter' 또는 'Meta+Enter'
     # 혹은 마우스로 클릭할 수 없는 환경이므로 안내 메시지가 필요합니다.
     user_input = await asyncio.to_thread(
@@ -23,53 +25,73 @@ async def get_multiline_input(prompt: str) -> str:
     return user_input.strip()
 
 async def stream_graph_response(input, graph, config={}):
+    current_tool_args = ""
+    last_index = -1  # 현재 출력 중인 도구의 인덱스를 추적
+    
+    yield "\033[1;32m[AI]:\033[0m "
+
     async for message_chunk, metadata in graph.astream(
         input=input, stream_mode="messages", config=config
     ):
-        # 1. 노드 이름을 몰라도, Agent 노드에서 오는 것만 필터링 (가장 안전)
         if metadata.get("langgraph_node") == "tools":
             continue
 
         if isinstance(message_chunk, AIMessageChunk):
-            # 도구 호출 완료 시 줄바꿈
-            if message_chunk.response_metadata.get("finish_reason") == "tool_calls":
-                yield "\n\n"
-
+            # 1. 도구 호출 시작/진행 중
             if message_chunk.tool_call_chunks:
-                tool_chunk = message_chunk.tool_call_chunks[0]
-                
-                # 2. tool_name과 args를 '누적'해서 출력하도록 수정
-                if tool_chunk.get("name"):
-                    yield f"\033[94m > Tool used: {tool_chunk['name']} \033[0m\n"
-                if tool_chunk.get("args"):
-                    yield f"\033[90m{tool_chunk['args']}\033[0m\n"  # 덮어쓰지 않고 이어서 보냄
-            else:
+                for chunk in message_chunk.tool_call_chunks:
+                    idx = chunk.get("index")
+                    
+                    # 💡 핵심: 새로운 인덱스가 등장할 때만 이름을 출력합니다.
+                    if idx != last_index:
+                        if chunk.get("name"):
+                            yield f"\n\n\033[94m🛠️  Executing Tool: {chunk['name']}\033[0m\n"
+                            last_index = idx  # 출력한 도구의 인덱스를 저장
+                    
+                    # 인자(args)는 들어오는 대로 바로 출력 (회색)
+                    if chunk.get("args"):
+                        yield f"\033[90m{chunk['args']}\033[0m"
+                        # 나중에 정렬된 출력을 원한다면 여기에 누적만 하세요.
+                        current_tool_args += chunk["args"]
+            
+            # 2. 일반 텍스트 내용 출력
+            elif message_chunk.content:
                 yield message_chunk.content
 
-async def fix_memory_if_broken(graph, config):
+            # 3. 마무리 (필요 시)
+            if message_chunk.response_metadata.get("finish_reason") == "tool_calls":
+                yield "\n"
+                last_index = -1 # 초기화
+
+async def fix_memory_if_broken(graph, config, error_type=None):
     state = await graph.aget_state(config)
     if not state.values or "messages" not in state.values:
         return False
 
     messages = state.values["messages"]
-    if len(messages) < 2: return False
-
-    # 삭제할 메시지 리스트 준비
-    to_remove = []
+    if not messages: return False
     
-    # 1. 마지막 AI의 잘못된 도구 호출 삭제
-    last_msg = messages[-1]
-    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-        to_remove.append(RemoveMessage(id=last_msg.id))
-        
-        # 2. [추가] 그 원인이 된 바로 직전의 Human 메시지도 함께 삭제
-        prev_msg = messages[-2]
-        if isinstance(prev_msg, HumanMessage):
-            print(f"🧹 원인이 된 사용자 요청도 함께 정리합니다: '{prev_msg.content[:20]}...'")
-            to_remove.append(RemoveMessage(id=prev_msg.id))
+    to_remove = []
+
+    # 1. 특정 에러(Recursion)인 경우: HumanMessage까지 거슬러 올라가며 전체 삭제
+    if error_type == "RecursionError":
+        print("🔄 단계 초과: 관련 문맥을 모두 정리합니다.")
+        for msg in reversed(messages):
+            to_remove.append(RemoveMessage(id=msg.id))
+            if isinstance(msg, HumanMessage): 
+                break 
+
+    # 2. 그 외 모든 에러 (도구 에러, API 에러, 일반 예외 등)
+    else:
+        # 가장 마지막 메시지부터 지우되, HumanMessage를 만날 때까지 지웁니다.
+        # 이렇게 하면 '잘못된 도구 호출 AI 메시지'와 '원인이 된 사용자 질문'이 모두 삭제됩니다.
+        for msg in reversed(messages):
+            to_remove.append(RemoveMessage(id=msg.id))
+            if isinstance(msg, HumanMessage):
+                break
 
     if to_remove:
-        await graph.aupdate_state(config, {"messages": to_remove})
+        await graph.aupdate_state(config, {"messages": to_remove}, as_node="Agent")
         return True
     return False
 
@@ -77,7 +99,9 @@ async def run_mcp_agent():
 
     # Memory Configuration
     memory = MemorySaver()
-    config = {"configurable": {"thread_id": "thread_1"}}
+    config = {
+        "configurable": {"thread_id": "thread_1"},
+        "recursion_limit": 100} # 50번 이상의 도구 사용 가능
 
     # MCP Server Connection
     try:
@@ -127,7 +151,7 @@ async def run_mcp_agent():
     )
 
     print("\n--- PubMed AI Agent Started ---")
-    print("종료하려면 'exit' 또는 'quit'을 입력하세요. (esc + Enter 로 입력)")
+    print("종료하려면 'exit' 또는 'quit'을 입력하세요.")
 
     # 2. 반복 루프 시작
     while True:
@@ -145,7 +169,7 @@ async def run_mcp_agent():
         }
 
         try:
-            print("🤖 ...", end="\n", flush=True)
+            print("\n🤖 ...", end="\n\n", flush=True)
             
             # 통합된 제너레이터 호출
             async for text in stream_graph_response(msg, mcp_agent, config):
@@ -154,24 +178,23 @@ async def run_mcp_agent():
             print("\n" + "="*50)
             
         except Exception as e:
-            # 변수를 미리 초기화해둡니다.
-            was_fixed = False
-            
-            # 1. 도구 호출 메시지와 결과가 짝이 안 맞을 때 (400 에러 등)
-            if "tool_calls" in str(e) or "ToolException" in str(type(e).__name__):
-                print(f"\n\033[93m🛠️  오류 감지({type(e).__name__}): 메모리 복구 시도...\033[0m")
-                was_fixed = await fix_memory_if_broken(mcp_agent, config)
-                
-                if was_fixed:
-                    print("\033[92m✅ 복구 완료! 이전 에러 메시지가 삭제되었습니다.\033[0m")
-                    print("\033[94m💡 팁: 다른 명령을 입력해 주세요.\033[0m")
-                    # 💡 [핵심] 여기서 다시 시도하지 않고 'continue'를 통해 루프의 처음(input 단계)으로 점프!
-                    continue
-                else:
-                    print("\n❌ 자동 복구가 불가능한 상태입니다.")
-            else:
-                # 보안 위반 등 도구 자체의 에러인 경우
-                print(f"\n❌ 실행 오류 발생: {e}")
+                    error_str = str(e)
+                    error_name = type(e).__name__
+                    
+                    # [수정] 어떤 에러가 발생하든 메모리 복구를 시도하도록 통합
+                    print(f"\n\033[91m❌ 오류 발생 ({error_name}): 메모리를 정리하고 복구를 시도합니다...\033[0m")
+                    
+                    # 에러 종류에 따른 타입 지정
+                    e_type = "RecursionError" if "Recursion limit" in error_str else "GeneralError"
+                    
+                    was_fixed = await fix_memory_if_broken(mcp_agent, config, error_type=e_type)
+                    
+                    if was_fixed:
+                        print("\033[92m✅ 메모리 정리 완료. 다음 질문을 입력할 수 있습니다.\033[0m")
+                        # 💡 continue를 하면 루프의 처음으로 돌아가 새로운 입력을 기다립니다.
+                        continue
+                    else:
+                        print("\033[93m⚠️ 메모리를 정리할 내용이 없습니다. 계속 진행합니다.\033[0m")
 
 if __name__ == "__main__":
     # 터미널 실행 시에는 아래 두 줄이 없어도 되지만, 노트북 환경 호환성을 위해 유지 가능
