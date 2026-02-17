@@ -1,0 +1,44 @@
+{
+    "mcpServers": {
+        "pubmed": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@cyanheads/pubmed-mcp-server"
+            ],
+            "transport": "stdio"
+        },
+        "filesystem": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "${MCP_FILESYSTEM_DIR}"
+            ],
+            "transport": "stdio"
+        },
+        "sequential-thinking": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-sequential-thinking"
+            ],
+            "transport": "stdio"
+        },
+        "mcp-compass": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@liuyoshio/mcp-compass"
+            ],
+            "transport": "stdio"
+        },
+        "ddg-search": {
+            "command": "uvx",
+            "args": [
+                "duckduckgo-mcp-server"
+            ],
+            "transport": "stdio"
+        }
+    }
+}

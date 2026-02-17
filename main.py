@@ -4,27 +4,23 @@ from langchain_core.messages import HumanMessage, AIMessageChunk, RemoveMessage
 from langgraph.checkpoint.memory import MemorySaver
 import asyncio
 import warnings
-from prompt import PUBMED_PROMPT
-from mcp_client_config import client_config
-from typing import AsyncGenerator, Any
+from prompt import BASE_SYSTEM_PROMPT
+from config.config import MCP_CONFIG, MCP_FILESYSTEM_DIR
+from prompt_toolkit import prompt as pt_prompt
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 async def get_multiline_input(prompt: str) -> str:
-    print(f"{prompt} (전송: 빈 줄에서 Enter 입력)")
-    lines = []
-    
-    while True:
-        # 각 줄을 받을 때는 strip()을 하지 않고 그대로 받음
-        line = await asyncio.to_thread(input, "> ")
-        
-        # 사용자가 아무것도 치지 않고 엔터만 눌렀을 때 (진짜 빈 줄)
-        if line == "": 
-            break
-        
-        lines.append(line)
-    
-    # 모든 줄을 합친 후, 전체 메시지의 앞뒤 공백만 딱 한 번 제거
-    return "\n".join(lines).strip()
+    print(prompt)
+    # multiline=True일 때, 전송은 보통 'Esc' 누른 후 'Enter' 또는 'Meta+Enter'
+    # 혹은 마우스로 클릭할 수 없는 환경이므로 안내 메시지가 필요합니다.
+    user_input = await asyncio.to_thread(
+        pt_prompt, 
+        "> ", 
+        multiline=True,
+        prompt_continuation="  " # 줄바꿈 시 앞에 붙는 접두어
+    )
+    return user_input.strip()
 
 async def stream_graph_response(input, graph, config={}):
     async for message_chunk, metadata in graph.astream(
@@ -46,7 +42,7 @@ async def stream_graph_response(input, graph, config={}):
                 if tool_chunk.get("name"):
                     yield f"\033[94m > Tool used: {tool_chunk['name']} \033[0m\n"
                 if tool_chunk.get("args"):
-                    yield f"\033[90m{tool_chunk['args']}\033[0m"  # 덮어쓰지 않고 이어서 보냄
+                    yield f"\033[90m{tool_chunk['args']}\033[0m\n"  # 덮어쓰지 않고 이어서 보냄
             else:
                 yield message_chunk.content
 
@@ -77,7 +73,7 @@ async def fix_memory_if_broken(graph, config):
         return True
     return False
 
-async def run_pubmed():
+async def run_mcp_agent():
 
     # Memory Configuration
     memory = MemorySaver()
@@ -86,7 +82,7 @@ async def run_pubmed():
     # MCP Server Connection
     try:
         print("CONNECTING MCP SERVER...")
-        client = MultiServerMCPClient(client_config)
+        client = MultiServerMCPClient(MCP_CONFIG)
         # 이 단계에서 서버가 안 뜨면 무한 대기하거나 죽을 수 있습니다.
         tools = await asyncio.wait_for(client.get_tools(), timeout=120.0) 
     except asyncio.TimeoutError:
@@ -101,17 +97,37 @@ async def run_pubmed():
         return
     
     print(f"✅ Loaded {len(tools)} tools.")
+
+    system_prompt = f"""
+    Your name is Scout and you are an expert data scientist. You help customers manage their data science projects by leveraging the tools available to you. Your goal is to collaborate with the customer in incrementally building their analysis or data modeling project. Version control is a critical aspect of this project, so you must use the git tools to manage the project's version history and maintain a clean, easy to understand commit history.
+
+    <filesystem>
+    You have access to a set of tools that allow you to interact with the user's local filesystem. 
+    You are only able to access files within the working directory `projects`. 
+    The absolute path to this directory is: {MCP_FILESYSTEM_DIR}
+    If you try to access a file outside of this directory, you will receive an error.
+    Always use absolute paths when specifying files.
+    </filesystem>
+
+    {BASE_SYSTEM_PROMPT}
+
+    <tools>
+    {tools}
+    </tools>
+
+    Assist the customer in all aspects of their data science workflow.
+    """
     
     # Agent Initialization
-    pubmed_agent = build_simple_agent(
+    mcp_agent = build_simple_agent(
         model="gpt-5-nano",
-        system_prompt=PUBMED_PROMPT,
+        system_prompt=system_prompt,
         tools=tools,
         checkpointer=memory
     )
 
     print("\n--- PubMed AI Agent Started ---")
-    print("종료하려면 'exit' 또는 'quit'을 입력하세요.")
+    print("종료하려면 'exit' 또는 'quit'을 입력하세요. (esc + Enter 로 입력)")
 
     # 2. 반복 루프 시작
     while True:
@@ -132,7 +148,7 @@ async def run_pubmed():
             print("🤖 ...", end="\n", flush=True)
             
             # 통합된 제너레이터 호출
-            async for text in stream_graph_response(msg, pubmed_agent, config):
+            async for text in stream_graph_response(msg, mcp_agent, config):
                 print(text, end="", flush=True)
             
             print("\n" + "="*50)
@@ -144,7 +160,7 @@ async def run_pubmed():
             # 1. 도구 호출 메시지와 결과가 짝이 안 맞을 때 (400 에러 등)
             if "tool_calls" in str(e) or "ToolException" in str(type(e).__name__):
                 print(f"\n\033[93m🛠️  오류 감지({type(e).__name__}): 메모리 복구 시도...\033[0m")
-                was_fixed = await fix_memory_if_broken(pubmed_agent, config)
+                was_fixed = await fix_memory_if_broken(mcp_agent, config)
                 
                 if was_fixed:
                     print("\033[92m✅ 복구 완료! 이전 에러 메시지가 삭제되었습니다.\033[0m")
@@ -164,6 +180,6 @@ if __name__ == "__main__":
 
     try:
         # 우리가 만든 비동기 에이전트 실행 루프
-        asyncio.run(run_pubmed())
+        asyncio.run(run_mcp_agent())
     except KeyboardInterrupt:
         print("\n강제 종료되었습니다.")
