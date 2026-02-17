@@ -1,4 +1,12 @@
 {
+    "pubmed": {
+        "command": "npx",
+        "args": [
+            "-y",
+            "@cyanheads/pubmed-mcp-server"
+        ],
+        "transport": "stdio"
+    },
     "git": {
         "command": "uvx",
         "args": [

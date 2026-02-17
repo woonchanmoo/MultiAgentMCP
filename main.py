@@ -5,7 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 import asyncio
 import warnings
 from prompt import BASE_SYSTEM_PROMPT
-from config.config import MCP_CONFIG, MCP_FILESYSTEM_DIR
+from config.config import MCP_CONFIG, MCP_FILESYSTEM_DIR, LLM_MODEL
 from prompt_toolkit import prompt as pt_prompt
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -27,8 +27,7 @@ async def get_multiline_input(prompt: str) -> str:
 async def stream_graph_response(input, graph, config={}):
     current_tool_args = ""
     last_index = -1  # 현재 출력 중인 도구의 인덱스를 추적
-    
-    yield "\033[1;32m[AI]:\033[0m "
+    first_text = True  # 🌟 추가: 첫 번째 텍스트 출력을 감지하기 위한 플래그
 
     async for message_chunk, metadata in graph.astream(
         input=input, stream_mode="messages", config=config
@@ -45,7 +44,7 @@ async def stream_graph_response(input, graph, config={}):
                     # 💡 핵심: 새로운 인덱스가 등장할 때만 이름을 출력합니다.
                     if idx != last_index:
                         if chunk.get("name"):
-                            yield f"\n\n\033[94m🛠️  Executing Tool: {chunk['name']}\033[0m\n"
+                            yield f"\n\033[94m🛠️  Executing Tool: {chunk['name']}\033[0m\n"
                             last_index = idx  # 출력한 도구의 인덱스를 저장
                     
                     # 인자(args)는 들어오는 대로 바로 출력 (회색)
@@ -56,6 +55,10 @@ async def stream_graph_response(input, graph, config={}):
             
             # 2. 일반 텍스트 내용 출력
             elif message_chunk.content:
+                # 🌟 도구 로그 등이 찍힌 후 첫 답변이라면 줄바꿈을 두 번 추가하여 구분
+                if first_text:
+                    yield "\n\033[1;32m[AI]:\033[0m " 
+                    first_text = False # 이후 텍스트 chunk부터는 줄바꿈 없이 출력
                 yield message_chunk.content
 
             # 3. 마무리 (필요 시)
@@ -123,7 +126,9 @@ async def run_mcp_agent():
     print(f"✅ Loaded {len(tools)} tools.")
 
     system_prompt = f"""
-    Your name is Scout and you are an expert data scientist. You help customers manage their data science projects by leveraging the tools available to you. Your goal is to collaborate with the customer in incrementally building their analysis or data modeling project. Version control is a critical aspect of this project, so you must use the git tools to manage the project's version history and maintain a clean, easy to understand commit history.
+    Your name is Scout and you are an expert data scientist.
+    You help customers manage their data science projects by leveraging the tools available to you.
+    Your goal is to collaborate with the customer in incrementally building their analysis or data modeling project.
 
     <filesystem>
     You have access to a set of tools that allow you to interact with the user's local filesystem. 
@@ -144,7 +149,7 @@ async def run_mcp_agent():
     
     # Agent Initialization
     mcp_agent = build_simple_agent(
-        model="gpt-5-nano",
+        model=LLM_MODEL,
         system_prompt=system_prompt,
         tools=tools,
         checkpointer=memory
@@ -175,14 +180,21 @@ async def run_mcp_agent():
             async for text in stream_graph_response(msg, mcp_agent, config):
                 print(text, end="", flush=True)
             
-            print("\n" + "="*50)
+            print("\n")
             
         except Exception as e:
                     error_str = str(e)
                     error_name = type(e).__name__
+                                    
+                # 🌟 [디버깅 추가] 상세 에러 내용 출력
+                    print(f"\n\033[91m" + "="*50)
+                    print(f"🔴 상세 에러 발생!")
+                    print(f"유형: {error_name}")
+                    print(f"내용: {error_str}")
                     
-                    # [수정] 어떤 에러가 발생하든 메모리 복구를 시도하도록 통합
-                    print(f"\n\033[91m❌ 오류 발생 ({error_name}): 메모리를 정리하고 복구를 시도합니다...\033[0m")
+                    # 만약 도구 실행 중 발생한 구체적인 로그를 보고 싶다면 traceback 출력
+                    # print(traceback.format_exc()) 
+                    print("="*50 + "\033[0m")
                     
                     # 에러 종류에 따른 타입 지정
                     e_type = "RecursionError" if "Recursion limit" in error_str else "GeneralError"

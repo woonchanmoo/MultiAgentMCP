@@ -1,11 +1,43 @@
 {
     "mcpServers": {
-        "pubmed": {
-            "command": "npx",
+        "mcp-python-interpreter": {
+            "command": "uvx",
             "args": [
-                "-y",
-                "@cyanheads/pubmed-mcp-server"
+                "mcp-python-interpreter",
+                "--dir",
+                "${MCP_FILESYSTEM_DIR}",
+                "--python-path",
+                "${PYTHON_DIR}"
             ],
+            "env": {
+                "MCP_ALLOW_SYSTEM_ACCESS": "0"
+            },
+            "transport": "stdio"
+        },
+        "ncbi-datasets-server": {
+            "command": "node",
+            "args": [
+                "${NCBI_DATASETS_JS}"
+            ],
+            "env": {
+                "NCBI_API_KEY": "${NCBI_API_KEY}"
+            },
+            "transport": "stdio"
+        },
+        "ncbi-literature": {
+            "command": "poetry",
+            "args": [
+                "run",
+                "python",
+                "-m",
+                "ncbi_mcp_server.server"
+            ],
+            "cwd": "${NCBI_MCP_SERVER_DIR}",
+            "env": {
+                "NCBI_API_KEY": "${NCBI_API_KEY}",
+                "NCBI_EMAIL": "${NCBI_EMAIL}",
+                "PYTHONPATH": "src"
+            },
             "transport": "stdio"
         },
         "filesystem": {

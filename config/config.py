@@ -28,6 +28,15 @@ def resolve_env_vars(config: dict) -> dict:
                         if env_var_value is None:
                             raise ValueError(f"Environment variable {env_var_name} is not set")
                         config["mcpServers"][server_name][property][i] = env_var_value
+                        # 🌟 3. cwd(작업 디렉토리) 경로 치환 추가
+            if property == "cwd":
+                value = server_config[property]
+                if isinstance(value, str) and value.startswith("${"):
+                    env_var_name = value[2:-1]
+                    env_var_value = os.environ.get(env_var_name, None)
+                    if env_var_value is None:
+                        raise ValueError(f"Environment variable {env_var_name} is not set")
+                    config["mcpServers"][server_name][property] = env_var_value
     return config
 
 
@@ -40,5 +49,13 @@ with open(config_file, "r") as f:
 
 mcp_config = resolve_env_vars(config)
 
+### constants
 MCP_CONFIG = mcp_config["mcpServers"]
 MCP_FILESYSTEM_DIR = os.getenv("MCP_FILESYSTEM_DIR")
+LLM_MODEL = "gpt-5"
+
+print("-"*50)
+print(f"Current LLM Model: {LLM_MODEL}")
+print("-"*50)
+
+# print(MCP_CONFIG)
