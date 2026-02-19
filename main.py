@@ -1,6 +1,6 @@
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from agent import build_simple_agent
-from langchain_core.messages import HumanMessage, AIMessageChunk, RemoveMessage
+from langchain_core.messages import HumanMessage, AIMessageChunk, RemoveMessage, AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 import asyncio
 import warnings
@@ -25,78 +25,47 @@ async def get_multiline_input(prompt: str) -> str:
     return user_input.strip()
 
 async def stream_graph_response(input, graph, config={}):
-    current_tool_args = ""
-    last_index = -1  # 현재 출력 중인 도구의 인덱스를 추적
-    first_text = True  # 🌟 추가: 첫 번째 텍스트 출력을 감지하기 위한 플래그
+    last_index = -1
+    first_text = True
 
     async for message_chunk, metadata in graph.astream(
         input=input, stream_mode="messages", config=config
     ):
+        # 도구 실행 노드에서 나오는 출력은 중복이므로 건너뜁니다.
         if metadata.get("langgraph_node") == "tools":
             continue
 
-        if isinstance(message_chunk, AIMessageChunk):
-            # 1. 도구 호출 시작/진행 중
-            if message_chunk.tool_call_chunks:
+        # 1. AIMessage(완성본) 또는 AIMessageChunk(조각)인지 확인
+        if isinstance(message_chunk, (AIMessage, AIMessageChunk)):
+            
+            # 2. 도구 호출(Tool Calls) 처리
+            # Chunk 타입이고 tool_call_chunks가 있는 경우에만 실행
+            if isinstance(message_chunk, AIMessageChunk) and message_chunk.tool_call_chunks:
                 for chunk in message_chunk.tool_call_chunks:
                     idx = chunk.get("index")
-                    
-                    # 💡 핵심: 새로운 인덱스가 등장할 때만 이름을 출력합니다.
                     if idx != last_index:
                         if chunk.get("name"):
                             yield f"\n\033[94m🛠️  Executing Tool: {chunk['name']}\033[0m\n"
-                            last_index = idx  # 출력한 도구의 인덱스를 저장
-                    
-                    # 인자(args)는 들어오는 대로 바로 출력 (회색)
+                            last_index = idx
                     if chunk.get("args"):
                         yield f"\033[90m{chunk['args']}\033[0m"
-                        # 나중에 정렬된 출력을 원한다면 여기에 누적만 하세요.
-                        current_tool_args += chunk["args"]
             
-            # 2. 일반 텍스트 내용 출력
+            # 3. 일반 텍스트 내용(Content) 출력
+            # 완성된 AIMessage(에러 중단 메시지 포함)와 Chunk의 텍스트를 모두 잡습니다.
             elif message_chunk.content:
-                # 🌟 도구 로그 등이 찍힌 후 첫 답변이라면 줄바꿈을 두 번 추가하여 구분
                 if first_text:
                     yield "\n\033[1;32m[AI]:\033[0m " 
-                    first_text = False # 이후 텍스트 chunk부터는 줄바꿈 없이 출력
-                yield message_chunk.content
+                    first_text = False
+                
+                # content가 리스트 형태인 경우(멀티모달 등)를 대비해 문자열 변환
+                content_text = message_chunk.content if isinstance(message_chunk.content, str) else str(message_chunk.content)
+                yield content_text
 
-            # 3. 마무리 (필요 시)
-            if message_chunk.response_metadata.get("finish_reason") == "tool_calls":
-                yield "\n"
-                last_index = -1 # 초기화
-
-async def fix_memory_if_broken(graph, config, error_type=None):
-    state = await graph.aget_state(config)
-    if not state.values or "messages" not in state.values:
-        return False
-
-    messages = state.values["messages"]
-    if not messages: return False
-    
-    to_remove = []
-
-    # 1. 특정 에러(Recursion)인 경우: HumanMessage까지 거슬러 올라가며 전체 삭제
-    if error_type == "RecursionError":
-        print("🔄 단계 초과: 관련 문맥을 모두 정리합니다.")
-        for msg in reversed(messages):
-            to_remove.append(RemoveMessage(id=msg.id))
-            if isinstance(msg, HumanMessage): 
-                break 
-
-    # 2. 그 외 모든 에러 (도구 에러, API 에러, 일반 예외 등)
-    else:
-        # 가장 마지막 메시지부터 지우되, HumanMessage를 만날 때까지 지웁니다.
-        # 이렇게 하면 '잘못된 도구 호출 AI 메시지'와 '원인이 된 사용자 질문'이 모두 삭제됩니다.
-        for msg in reversed(messages):
-            to_remove.append(RemoveMessage(id=msg.id))
-            if isinstance(msg, HumanMessage):
-                break
-
-    if to_remove:
-        await graph.aupdate_state(config, {"messages": to_remove}, as_node="Agent")
-        return True
-    return False
+            # 4. 마무리 처리 (Chunk의 finish_reason 확인)
+            if isinstance(message_chunk, AIMessageChunk):
+                if message_chunk.response_metadata.get("finish_reason") == "tool_calls":
+                    yield "\n"
+                    last_index = -1
 
 async def run_mcp_agent():
 
@@ -181,32 +150,38 @@ async def run_mcp_agent():
                 print(text, end="", flush=True)
             
             print("\n")
-            
+        
         except Exception as e:
-                    error_str = str(e)
-                    error_name = type(e).__name__
+                    # 이제 여기는 '그래프 내부' 에러가 아니라 '시스템 레벨' 에러만 잡힙니다.
+                    print(f"\n\033[91m🔴 치명적 시스템 오류 발생: {e}\033[0m")
+                    # 필요하다면 여기서만 아주 제한적으로 메모리 초기화를 고려할 수 있습니다.
+
+        ### 기존 fix_memory 방식
+        # except Exception as e:
+        #             error_str = str(e)
+        #             error_name = type(e).__name__
                                     
-                # 🌟 [디버깅 추가] 상세 에러 내용 출력
-                    print(f"\n\033[91m" + "="*50)
-                    print(f"🔴 상세 에러 발생!")
-                    print(f"유형: {error_name}")
-                    print(f"내용: {error_str}")
+        #         # 🌟 [디버깅 추가] 상세 에러 내용 출력
+        #             print(f"\n\033[91m" + "="*50)
+        #             print(f"🔴 상세 에러 발생!")
+        #             print(f"유형: {error_name}")
+        #             print(f"내용: {error_str}")
                     
-                    # 만약 도구 실행 중 발생한 구체적인 로그를 보고 싶다면 traceback 출력
-                    # print(traceback.format_exc()) 
-                    print("="*50 + "\033[0m")
+        #             # 만약 도구 실행 중 발생한 구체적인 로그를 보고 싶다면 traceback 출력
+        #             # print(traceback.format_exc()) 
+        #             print("="*50 + "\033[0m")
                     
-                    # 에러 종류에 따른 타입 지정
-                    e_type = "RecursionError" if "Recursion limit" in error_str else "GeneralError"
+        #             # 에러 종류에 따른 타입 지정
+        #             e_type = "RecursionError" if "Recursion limit" in error_str else "GeneralError"
                     
-                    was_fixed = await fix_memory_if_broken(mcp_agent, config, error_type=e_type)
+        #             was_fixed = await fix_memory_if_broken(mcp_agent, config, error_type=e_type)
                     
-                    if was_fixed:
-                        print("\033[92m✅ 메모리 정리 완료. 다음 질문을 입력할 수 있습니다.\033[0m")
-                        # 💡 continue를 하면 루프의 처음으로 돌아가 새로운 입력을 기다립니다.
-                        continue
-                    else:
-                        print("\033[93m⚠️ 메모리를 정리할 내용이 없습니다. 계속 진행합니다.\033[0m")
+        #             if was_fixed:
+        #                 print("\033[92m✅ 메모리 정리 완료. 다음 질문을 입력할 수 있습니다.\033[0m")
+        #                 # 💡 continue를 하면 루프의 처음으로 돌아가 새로운 입력을 기다립니다.
+        #                 continue
+        #             else:
+        #                 print("\033[93m⚠️ 메모리를 정리할 내용이 없습니다. 계속 진행합니다.\033[0m")
 
 if __name__ == "__main__":
     # 터미널 실행 시에는 아래 두 줄이 없어도 되지만, 노트북 환경 호환성을 위해 유지 가능
@@ -218,3 +193,37 @@ if __name__ == "__main__":
         asyncio.run(run_mcp_agent())
     except KeyboardInterrupt:
         print("\n강제 종료되었습니다.")
+
+###
+# async def fix_memory_if_broken(graph, config, error_type=None):
+#     state = await graph.aget_state(config)
+#     if not state.values or "messages" not in state.values:
+#         return False
+
+#     messages = state.values["messages"]
+#     if not messages: return False
+    
+#     to_remove = []
+
+#     # 1. 특정 에러(Recursion)인 경우: HumanMessage까지 거슬러 올라가며 전체 삭제
+#     if error_type == "RecursionError":
+#         print("🔄 단계 초과: 관련 문맥을 모두 정리합니다.")
+#         for msg in reversed(messages):
+#             to_remove.append(RemoveMessage(id=msg.id))
+#             if isinstance(msg, HumanMessage): 
+#                 break 
+
+#     # 2. 그 외 모든 에러 (도구 에러, API 에러, 일반 예외 등)
+#     else:
+#         # 가장 마지막 메시지부터 지우되, HumanMessage를 만날 때까지 지웁니다.
+#         # 이렇게 하면 '잘못된 도구 호출 AI 메시지'와 '원인이 된 사용자 질문'이 모두 삭제됩니다.
+#         for msg in reversed(messages):
+#             to_remove.append(RemoveMessage(id=msg.id))
+#             # HumanMessage는 삭제하지 않고 중단
+#             if isinstance(msg, HumanMessage):
+#                 break
+
+#     if to_remove:
+#         await graph.aupdate_state(config, {"messages": to_remove}, as_node="Agent")
+#         return True
+#     return False
