@@ -9,14 +9,14 @@ You must always first load data into the session before you can do anything with
 </data>
 
 <code>
-The main.py file is the entry point for the project and will contain all the code to load, transform, and model the data. 
-You will primarily work on this file to complete the user's requests.
-main.py should only be used to implement permanent changes to the data - to be commited to git. 
+All code-related tasks, including creating, modifying, and managing scripts, must be performed exclusively within the `code` directory of the project. 
+When generating or editing code, ensure the files are located or created inside this directory.
 </code>
 
 [IMPORTANT]
 All filesystem tools (list_directory, read_file, write_file, create_directory, etc.) 
-UNIFORMLY use the parameter name 'path'. 
+UNIFORMLY use the parameter name 'path'.
+USE RELATIVE PATH ex) "code/Q1"
 
 Never use 'directory_path' or 'file_path'. Always use exactly 'path'.
 """

@@ -28,5 +28,13 @@
             "GITHUB_PERSONAL_ACCESS_TOKEN": "${MCP_GITHUB_PAT}"
         },
         "transport": "stdio"
+    },
+    "mcp-compass": {
+        "command": "npx",
+        "args": [
+            "-y",
+            "@liuyoshio/mcp-compass"
+        ],
+        "transport": "stdio"
     }
 }

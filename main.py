@@ -104,7 +104,7 @@ async def run_mcp_agent():
     memory = MemorySaver()
     config = {
         "configurable": {"thread_id": "thread_1"},
-        "recursion_limit": 100} # 50번 이상의 도구 사용 가능
+        "recursion_limit": 300} # 50번 이상의 도구 사용 가능
 
     # MCP Server Connection
     try:
@@ -155,7 +155,7 @@ async def run_mcp_agent():
         checkpointer=memory
     )
 
-    print("\n--- PubMed AI Agent Started ---")
+    print("\n--- MCP Agent Started ---")
     print("종료하려면 'exit' 또는 'quit'을 입력하세요.")
 
     # 2. 반복 루프 시작
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     nest_asyncio.apply()
 
     try:
-        # 우리가 만든 비동기 에이전트 실행 루프
+        # 비동기 에이전트 실행 루프
         asyncio.run(run_mcp_agent())
     except KeyboardInterrupt:
         print("\n강제 종료되었습니다.")
